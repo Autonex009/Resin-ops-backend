@@ -8,7 +8,14 @@ import {
   fileImports,
 } from "@/db/schema";
 import { parseSpreadsheet } from "@/lib/spreadsheet";
-import { normalizeStream, parseNumber, toDateString, toMonthDate } from "@/lib/import-helpers";
+import {
+  normalizeStream,
+  parseNumber,
+  toDateString,
+  toMonthDate,
+  addDays,
+  PROVISIONAL_LEAD_TIME_DAYS,
+} from "@/lib/import-helpers";
 
 export type ImportResult = { success: boolean; message: string };
 
@@ -41,9 +48,15 @@ export async function importSalesCommitments(file: File): Promise<ImportResult> 
       const plantCode = String(row["Mfg. Plant"] ?? "").trim();
       const plantId = plantCode ? await upsertPlant(db, plantCode) : null;
 
+      const salesOrderDate = toDateString(row["Sales Order Date"]);
+      const requiredDate = row["Required Date"]
+        ? toDateString(row["Required Date"])
+        : addDays(salesOrderDate, PROVISIONAL_LEAD_TIME_DAYS);
+
       await db.insert(salesCommitments).values({
         salesOrderNumber: String(row["Sales Order Number"] ?? ""),
-        salesOrderDate: toDateString(row["Sales Order Date"]),
+        salesOrderDate,
+        requiredDate,
         salespersonName: String(row["Salesperson Name"] ?? "") || null,
         customerName: String(row["Customer Name"] ?? ""),
         dispatchLocation:
