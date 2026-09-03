@@ -1,6 +1,13 @@
 import { and, eq, gte, lt, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { batches, dailyOutputs, plantCapacities, productionPlans, salesCommitments } from "@/db/schema";
+import {
+  batches,
+  dailyOutputs,
+  plantCapacities,
+  plants,
+  productionPlans,
+  salesCommitments,
+} from "@/db/schema";
 
 export function currentMonthRange() {
   const now = new Date();
@@ -154,6 +161,53 @@ export async function getCommitmentsShortCount() {
       sql`${salesCommitments.requiredDate} < current_date and ${salesCommitments.balanceQty} > 0`,
     );
   return Number(count);
+}
+
+export type PlantOutputPoint = { plantCode: string; plantName: string; actual: number; planned: number };
+
+// Actual vs planned output per plant this month — the plant-level breakdown
+// behind the aggregate Plan Attainment KPI.
+export async function getOutputByPlant(month?: string): Promise<PlantOutputPoint[]> {
+  const db = getDb();
+  const { start, end } = month ? { start: month, end: nextMonth(month) } : currentMonthRange();
+
+  const actualRows = await db
+    .select({ plantId: dailyOutputs.plantId, actual: sql<string>`sum(${dailyOutputs.actualQty})` })
+    .from(dailyOutputs)
+    .where(and(gte(dailyOutputs.outputDate, start), lt(dailyOutputs.outputDate, end)))
+    .groupBy(dailyOutputs.plantId);
+
+  const plannedRows = await db
+    .select({
+      plantId: productionPlans.plantId,
+      planned: sql<string>`sum(${productionPlans.plannedQty})`,
+    })
+    .from(productionPlans)
+    .where(eq(productionPlans.planMonth, start))
+    .groupBy(productionPlans.plantId);
+
+  const allPlants = await db.select().from(plants).orderBy(plants.code);
+  const actualByPlant = new Map(actualRows.map((r) => [r.plantId, Number(r.actual)]));
+  const plannedByPlant = new Map(plannedRows.map((r) => [r.plantId, Number(r.planned)]));
+
+  return allPlants
+    .map((p) => ({
+      plantCode: p.code,
+      plantName: p.name,
+      actual: actualByPlant.get(p.id) ?? 0,
+      planned: plannedByPlant.get(p.id) ?? 0,
+    }))
+    .filter((p) => p.actual > 0 || p.planned > 0);
+}
+
+export type BatchScheduleSummary = { onTrack: number; behind: number };
+
+// The count breakdown behind the single Batches Behind KPI.
+export async function getBatchesScheduleSummary(): Promise<BatchScheduleSummary> {
+  const db = getDb();
+  const [{ total }] = await db.select({ total: sql<string>`count(*)` }).from(batches);
+  const behind = await getBatchesBehindCount();
+  return { onTrack: Number(total) - behind, behind };
 }
 
 function nextMonth(monthDate: string) {
