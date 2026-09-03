@@ -7,20 +7,32 @@ import {
   getCommitmentsShortCount,
   getDailyTrend,
   getCapacityByStream,
+  getOutputByPlant,
+  getBatchesScheduleSummary,
 } from "@/lib/kpis";
 
 export async function GET(request: Request) {
   if (!isAuthorized(request)) return unauthorized();
 
-  const [output, capacity, batchesBehind, commitmentsShort, dailyTrend, capacityByStream] =
-    await Promise.all([
-      getMonthlyOutputSummary(),
-      getCapacityUtilization(),
-      getBatchesBehindCount(),
-      getCommitmentsShortCount(),
-      getDailyTrend(),
-      getCapacityByStream(),
-    ]);
+  const [
+    output,
+    capacity,
+    batchesBehind,
+    commitmentsShort,
+    dailyTrend,
+    capacityByStream,
+    outputByPlant,
+    batchesSchedule,
+  ] = await Promise.all([
+    getMonthlyOutputSummary(),
+    getCapacityUtilization(),
+    getBatchesBehindCount(),
+    getCommitmentsShortCount(),
+    getDailyTrend(),
+    getCapacityByStream(),
+    getOutputByPlant(),
+    getBatchesScheduleSummary(),
+  ]);
 
   return NextResponse.json({
     output,
@@ -29,5 +41,7 @@ export async function GET(request: Request) {
     commitmentsShort,
     dailyTrend,
     capacityByStream,
+    outputByPlant,
+    batchesSchedule,
   });
 }
