@@ -55,6 +55,8 @@ export const salesCommitments = pgTable("sales_commitments", {
   id: uuid("id").primaryKey().defaultRandom(),
   salesOrderNumber: text("sales_order_number").notNull(),
   salesOrderDate: date("sales_order_date").notNull(),
+  // From the file if present, else backfilled as salesOrderDate + a provisional lead time until Thermax confirms the real source/rule.
+  requiredDate: date("required_date"),
   salespersonName: text("salesperson_name"),
   customerName: text("customer_name").notNull(),
   dispatchLocation: text("dispatch_location"),

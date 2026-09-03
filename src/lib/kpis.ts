@@ -1,6 +1,6 @@
 import { and, eq, gte, lt, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { batches, dailyOutputs, plantCapacities, productionPlans } from "@/db/schema";
+import { batches, dailyOutputs, plantCapacities, productionPlans, salesCommitments } from "@/db/schema";
 
 export function currentMonthRange() {
   const now = new Date();
@@ -55,6 +55,17 @@ export async function getBatchesBehindCount() {
     .where(
       sql`(${batches.actualCompletion} is not null and ${batches.actualCompletion} > ${batches.plannedCompletion})
           or (${batches.actualCompletion} is null and ${batches.plannedCompletion} < current_date)`,
+    );
+  return Number(count);
+}
+
+export async function getCommitmentsShortCount() {
+  const db = getDb();
+  const [{ count }] = await db
+    .select({ count: sql<string>`count(*)` })
+    .from(salesCommitments)
+    .where(
+      sql`${salesCommitments.requiredDate} < current_date and ${salesCommitments.balanceQty} > 0`,
     );
   return Number(count);
 }

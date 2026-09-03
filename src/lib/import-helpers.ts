@@ -30,3 +30,11 @@ export function toMonthDate(value: unknown): string {
   if (!s) return "";
   return `${s.slice(0, 7)}-01`;
 }
+
+export const PROVISIONAL_LEAD_TIME_DAYS = 21;
+
+export function addDays(dateStr: string, days: number): string {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
