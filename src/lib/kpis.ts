@@ -210,6 +210,67 @@ export async function getBatchesScheduleSummary(): Promise<BatchScheduleSummary>
   return { onTrack: Number(total) - behind, behind };
 }
 
+export type AgingBucket = { bucket: string; count: number };
+
+const AGING_BUCKETS = ["Overdue", "0-7 days", "8-14 days", "15-21 days", "22+ days"] as const;
+
+// Open commitments (balance > 0) bucketed by days until required — a
+// forward-looking risk pipeline, not just the already-late count.
+export async function getCommitmentsAging(): Promise<AgingBucket[]> {
+  const db = getDb();
+  const rows = await db
+    .select({ requiredDate: salesCommitments.requiredDate })
+    .from(salesCommitments)
+    .where(sql`${salesCommitments.requiredDate} is not null and ${salesCommitments.balanceQty} > 0`);
+
+  const counts = new Map<string, number>(AGING_BUCKETS.map((b) => [b, 0]));
+  const today = new Date(new Date().toISOString().slice(0, 10) + "T00:00:00Z");
+
+  for (const row of rows) {
+    const required = new Date(`${row.requiredDate}T00:00:00Z`);
+    const daysUntil = Math.round((required.getTime() - today.getTime()) / 86_400_000);
+    let bucket: (typeof AGING_BUCKETS)[number];
+    if (daysUntil < 0) bucket = "Overdue";
+    else if (daysUntil <= 7) bucket = "0-7 days";
+    else if (daysUntil <= 14) bucket = "8-14 days";
+    else if (daysUntil <= 21) bucket = "15-21 days";
+    else bucket = "22+ days";
+    counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+  }
+
+  return AGING_BUCKETS.map((bucket) => ({ bucket, count: counts.get(bucket) ?? 0 }));
+}
+
+export type DueDateCount = { day: string; count: number };
+
+// Batches due (any status) per day this month — surfaces workload clustering
+// that a flat behind/on-track count can't show.
+export async function getBatchDueDateCounts(month?: string): Promise<DueDateCount[]> {
+  const db = getDb();
+  const { start, end } = month ? { start: month, end: nextMonth(month) } : currentMonthRange();
+
+  const rows = await db
+    .select({
+      day: batches.plannedCompletion,
+      count: sql<string>`count(*)`,
+    })
+    .from(batches)
+    .where(and(gte(batches.plannedCompletion, start), lt(batches.plannedCompletion, end)))
+    .groupBy(batches.plannedCompletion);
+
+  const countByDay = new Map(rows.map((r) => [r.day, Number(r.count)]));
+  const daysInMonth = new Date(
+    Date.UTC(Number(start.slice(0, 4)), Number(start.slice(5, 7)), 0),
+  ).getUTCDate();
+
+  const points: DueDateCount[] = [];
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateStr = `${start.slice(0, 7)}-${String(day).padStart(2, "0")}`;
+    points.push({ day: dateStr, count: countByDay.get(dateStr) ?? 0 });
+  }
+  return points;
+}
+
 function nextMonth(monthDate: string) {
   const d = new Date(`${monthDate}T00:00:00Z`);
   d.setUTCMonth(d.getUTCMonth() + 1);

@@ -9,7 +9,10 @@ import {
   getCapacityByStream,
   getOutputByPlant,
   getBatchesScheduleSummary,
+  getCommitmentsAging,
+  getBatchDueDateCounts,
 } from "@/lib/kpis";
+import { getCapacityByStream as getCapacityByPlantAndStream } from "@/lib/capacity";
 
 export async function GET(request: Request) {
   if (!isAuthorized(request)) return unauthorized();
@@ -23,6 +26,9 @@ export async function GET(request: Request) {
     capacityByStream,
     outputByPlant,
     batchesSchedule,
+    commitmentsAging,
+    batchDueDates,
+    capacityByPlantAndStream,
   ] = await Promise.all([
     getMonthlyOutputSummary(),
     getCapacityUtilization(),
@@ -32,6 +38,9 @@ export async function GET(request: Request) {
     getCapacityByStream(),
     getOutputByPlant(),
     getBatchesScheduleSummary(),
+    getCommitmentsAging(),
+    getBatchDueDateCounts(),
+    getCapacityByPlantAndStream(currentMonth()),
   ]);
 
   return NextResponse.json({
@@ -43,5 +52,13 @@ export async function GET(request: Request) {
     capacityByStream,
     outputByPlant,
     batchesSchedule,
+    commitmentsAging,
+    batchDueDates,
+    capacityByPlantAndStream,
   });
+}
+
+function currentMonth() {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString().slice(0, 10);
 }
