@@ -5,8 +5,8 @@ import { batches, batchStatusEnum, plants } from "@/db/schema";
 import { isAuthorized, unauthorized } from "@/lib/auth";
 import type { Stream } from "@/lib/import-helpers";
 
-const BEHIND_SQL = sql`(${batches.actualCompletion} is not null and ${batches.actualCompletion} > ${batches.plannedCompletion})
-  or (${batches.actualCompletion} is null and ${batches.plannedCompletion} < current_date)`;
+const BEHIND_SQL = sql`((${batches.actualCompletion} is not null and ${batches.actualCompletion} > ${batches.plannedCompletion})
+  or (${batches.actualCompletion} is null and ${batches.plannedCompletion} < current_date))`;
 
 export async function GET(request: Request) {
   if (!isAuthorized(request)) return unauthorized();
