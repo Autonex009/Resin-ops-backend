@@ -60,8 +60,8 @@ export async function getBatchesBehindCount() {
     .select({ count: sql<string>`count(*)` })
     .from(batches)
     .where(
-      sql`(${batches.actualCompletion} is not null and ${batches.actualCompletion} > ${batches.plannedCompletion})
-          or (${batches.actualCompletion} is null and ${batches.plannedCompletion} < current_date)`,
+      sql`((${batches.actualCompletion} is not null and ${batches.actualCompletion} > ${batches.plannedCompletion})
+          or (${batches.actualCompletion} is null and ${batches.plannedCompletion} < current_date))`,
     );
   return Number(count);
 }
