@@ -10,6 +10,8 @@ import {
 import { parseSpreadsheet } from "@/lib/spreadsheet";
 import {
   normalizeStream,
+  normalizeRow,
+  pick,
   parseNumber,
   toDateString,
   toMonthDate,
@@ -45,30 +47,34 @@ export async function importSalesCommitments(file: File): Promise<ImportResult> 
       .returning();
 
     for (const row of rows) {
-      const plantCode = String(row["Mfg. Plant"] ?? "").trim();
+      const r = normalizeRow(row);
+      const plantCode = String(pick(r, "Mfg. Plant") ?? "").trim();
       const plantId = plantCode ? await upsertPlant(db, plantCode) : null;
 
-      const salesOrderDate = toDateString(row["Sales Order Date"]);
-      const requiredDate = row["Required Date"]
-        ? toDateString(row["Required Date"])
+      const salesOrderDate = toDateString(pick(r, "Sales Order Date"));
+      const requiredDateRaw = pick(r, "Required Date");
+      const requiredDate = requiredDateRaw
+        ? toDateString(requiredDateRaw)
         : addDays(salesOrderDate, PROVISIONAL_LEAD_TIME_DAYS);
 
       await db.insert(salesCommitments).values({
-        salesOrderNumber: String(row["Sales Order Number"] ?? ""),
+        salesOrderNumber: String(pick(r, "Sales Order Number") ?? ""),
         salesOrderDate,
         requiredDate,
-        salespersonName: String(row["Salesperson Name"] ?? "") || null,
-        customerName: String(row["Customer Name"] ?? ""),
+        salespersonName: String(pick(r, "Salesperson Name") ?? "") || null,
+        customerName: String(pick(r, "Customer Name") ?? ""),
         dispatchLocation:
-          String(row["Container Dispatch Location (Plant-internal)"] ?? "") || null,
-        itemCode: String(row["Item Code"] ?? ""),
-        itemDescription: String(row["Item Description"] ?? "") || null,
-        balanceQty: parseNumber(row["Sales Order Primary Balance Qty"]),
-        palletsRequired: parseNumber(row["Pallets Required"]),
-        balanceValue: parseNumber(row["Sales Order Balance Value"]),
-        subPu: String(row["SUB PU"] ?? "") || null,
-        productSubgroup: String(row["Product Subgroup"] ?? "") || null,
-        businessGroup: String(row["Business Group"] ?? "") || null,
+          String(
+            pick(r, "Container Dispatch Location (Plant-internal)", "Container Dispatch Location") ?? "",
+          ) || null,
+        itemCode: String(pick(r, "Item Code", "Item") ?? ""),
+        itemDescription: String(pick(r, "Item Description") ?? "") || null,
+        balanceQty: parseNumber(pick(r, "Sales Order Primary Balance Qty")),
+        palletsRequired: parseNumber(pick(r, "Pallets Required", "Pallets")),
+        balanceValue: parseNumber(pick(r, "Sales Order Balance Value")),
+        subPu: String(pick(r, "SUB PU") ?? "") || null,
+        productSubgroup: String(pick(r, "Product Subgroup") ?? "") || null,
+        businessGroup: String(pick(r, "Business Group") ?? "") || null,
         mfgPlantId: plantId,
         importId: importRecord.id,
       });
