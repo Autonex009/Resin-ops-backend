@@ -4,10 +4,11 @@ import {
   plants,
   salesCommitments,
   plantCapacities,
+  productionPlans,
   dailyOutputs,
   fileImports,
 } from "@/db/schema";
-import { parseSpreadsheet } from "@/lib/spreadsheet";
+import { parseSpreadsheet, parseWorkbookGrids } from "@/lib/spreadsheet";
 import {
   normalizeStream,
   normalizeRow,
@@ -32,6 +33,19 @@ async function upsertPlant(db: Db, code: string, name?: string) {
     .values({ code: trimmedCode, name: name?.trim() || trimmedCode })
     .returning();
   return created.id;
+}
+
+// For sheets that give us a plant NAME but no code (e.g. "Jhagadia Plant" —
+// Thermax hasn't told us their plant-code convention for this plant). Reuse
+// an existing plant by name if one exists; otherwise derive a placeholder
+// code so a plant record can exist at all. This code is a guess and should
+// be reconciled once Thermax confirms real codes for these plants.
+async function upsertPlantByName(db: Db, name: string) {
+  const trimmedName = name.trim();
+  const existing = await db.query.plants.findFirst({ where: eq(plants.name, trimmedName) });
+  if (existing) return existing.id;
+  const placeholderCode = `${trimmedName.slice(0, 3).toUpperCase()}1`;
+  return upsertPlant(db, placeholderCode, trimmedName);
 }
 
 export async function importSalesCommitments(file: File): Promise<ImportResult> {
@@ -153,6 +167,138 @@ export async function importDailyOutput(file: File): Promise<ImportResult> {
     }
 
     return { success: true, message: `Imported ${rows.length} daily output rows.` };
+  } catch (error) {
+    return { success: false, message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// Thermax's "Planning-Capacity Master" export: one sheet per plant, laid out
+// as a wide pivot rather than one-row-per-record. Row 2 holds the plant name
+// ("Jhagadia Plant"); row 4 is the header row, where column A reads
+// "<Stream> (Product Type)" — the whole sheet is scoped to that one stream.
+// Data rows start at row 5: columns A-G are Product/Monthly Req/Prod
+// Plan/Output/C-T, and every column from H onward is a repeating (date, A
+// shift, B shift, C shift) group — monthly placeholder dates first, then
+// real daily dates.
+//
+// There's no column that represents a hard capacity ceiling (only planning
+// figures), so this feeds Plan vs Actual, not Capacity Utilization:
+// "Prod Plan" summed across products -> one monthly production plan row per
+// plant/stream; the daily shift columns summed (A+B+C, across products) ->
+// daily output rows. Sheets that don't match this shape (Commitment File,
+// Tracker, Summary) are skipped.
+export async function importPlanningCapacityMaster(file: File): Promise<ImportResult> {
+  const db = getDb();
+
+  try {
+    const sheets = parseWorkbookGrids(await file.arrayBuffer());
+
+    const [importRecord] = await db
+      .insert(fileImports)
+      .values({ fileType: "planning_capacity_master", fileName: file.name, rowCount: sheets.length })
+      .returning();
+
+    let plansWritten = 0;
+    let outputRowsWritten = 0;
+    let sheetsProcessed = 0;
+
+    for (const { grid } of sheets) {
+      const plantNameRaw = String(grid[1]?.[0] ?? "").trim();
+      const typeHeaderRaw = String(grid[3]?.[0] ?? "").trim();
+      if (!plantNameRaw || !typeHeaderRaw) continue;
+
+      let stream;
+      try {
+        stream = normalizeStream(typeHeaderRaw);
+      } catch {
+        continue;
+      }
+
+      const plantName = plantNameRaw.replace(/\s+plant$/i, "").trim() || plantNameRaw;
+      const plantId = await upsertPlantByName(db, plantName);
+
+      const headerRow = grid[3] ?? [];
+      const dateRow = grid[2] ?? [];
+
+      // Shift-triple columns start after the fixed A-G columns; each date
+      // owns 3 columns (A/B/C shift). The sheet mixes two kinds of date
+      // column: one placeholder date per month (always the 8th — a template
+      // artifact, not real output) and a real day-by-day block for the
+      // current reporting month. Group by month and keep only the month
+      // that has more than one distinct day — that's the real daily data.
+      const allDateCols: { dateStr: string; col: number }[] = [];
+      for (let col = 7; col < headerRow.length; col += 3) {
+        const dateRaw = dateRow[col];
+        if (dateRaw === undefined || dateRaw === "") continue;
+        const dateStr = toDateString(dateRaw);
+        if (dateStr) allDateCols.push({ dateStr, col });
+      }
+      const byMonth = new Map<string, { dateStr: string; col: number }[]>();
+      for (const dc of allDateCols) {
+        const month = dc.dateStr.slice(0, 7);
+        if (!byMonth.has(month)) byMonth.set(month, []);
+        byMonth.get(month)!.push(dc);
+      }
+      const dailyDateCols = [...byMonth.values()].find((cols) => cols.length > 1) ?? [];
+
+      let planQtySum = 0;
+      const dailyTotals = new Map<string, number>();
+
+      for (let r = 4; r < grid.length; r++) {
+        const row = grid[r] ?? [];
+        const product = String(row[2] ?? "").trim();
+        if (!product) continue;
+
+        planQtySum += Number(parseNumber(row[4]));
+
+        for (const { dateStr, col } of dailyDateCols) {
+          const shiftTotal =
+            Number(parseNumber(row[col])) +
+            Number(parseNumber(row[col + 1])) +
+            Number(parseNumber(row[col + 2]));
+          if (shiftTotal > 0) {
+            dailyTotals.set(dateStr, (dailyTotals.get(dateStr) ?? 0) + shiftTotal);
+          }
+        }
+      }
+
+      if (planQtySum > 0 && dailyDateCols.length > 0) {
+        const planMonth = toMonthDate(dailyDateCols[0].dateStr);
+        await db
+          .insert(productionPlans)
+          .values({ plantId, stream, planMonth, plannedQty: String(planQtySum) })
+          .onConflictDoUpdate({
+            target: [productionPlans.plantId, productionPlans.stream, productionPlans.planMonth],
+            set: { plannedQty: String(planQtySum) },
+          });
+        plansWritten++;
+      }
+
+      for (const [dateStr, total] of dailyTotals) {
+        await db
+          .insert(dailyOutputs)
+          .values({ plantId, stream, outputDate: dateStr, actualQty: String(total), importId: importRecord.id })
+          .onConflictDoUpdate({
+            target: [dailyOutputs.plantId, dailyOutputs.stream, dailyOutputs.outputDate],
+            set: { actualQty: String(total), importId: importRecord.id },
+          });
+        outputRowsWritten++;
+      }
+
+      sheetsProcessed++;
+    }
+
+    if (sheetsProcessed === 0) {
+      return {
+        success: false,
+        message: "No recognizable plant/stream sheets found (expected plant name in row 2, a \"<Stream> (Product Type)\" header in row 4).",
+      };
+    }
+
+    return {
+      success: true,
+      message: `Processed ${sheetsProcessed} sheet(s): ${plansWritten} production plan row(s), ${outputRowsWritten} daily output row(s).`,
+    };
   } catch (error) {
     return { success: false, message: error instanceof Error ? error.message : String(error) };
   }

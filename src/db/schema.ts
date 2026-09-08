@@ -24,6 +24,7 @@ export const fileImportTypeEnum = pgEnum("file_import_type", [
   "sales_commitment",
   "plant_capacity",
   "daily_output",
+  "planning_capacity_master",
 ]);
 
 // Plants — e.g. DMP1 (Dahej). Source of truth for which plants exist.
