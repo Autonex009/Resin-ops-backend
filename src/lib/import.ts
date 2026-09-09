@@ -44,8 +44,19 @@ async function upsertPlantByName(db: Db, name: string) {
   const trimmedName = name.trim();
   const existing = await db.query.plants.findFirst({ where: eq(plants.name, trimmedName) });
   if (existing) return existing.id;
-  const placeholderCode = `${trimmedName.slice(0, 3).toUpperCase()}1`;
-  return upsertPlant(db, placeholderCode, trimmedName);
+
+  // Derive a placeholder code from the name, but never reuse a code that
+  // already belongs to a *different* plant — two names sharing a 3-letter
+  // prefix (e.g. "Jhagadia" and "Jhajjar" → both "JHA") would otherwise be
+  // silently merged into one plant. Walk PREFIX1, PREFIX2, … until a code is
+  // free (or already owned by this exact name).
+  const base = trimmedName.replace(/[^a-zA-Z0-9]/g, "").slice(0, 3).toUpperCase() || "PLT";
+  for (let n = 1; ; n++) {
+    const code = `${base}${n}`;
+    const clash = await db.query.plants.findFirst({ where: eq(plants.code, code) });
+    if (!clash) return upsertPlant(db, code, trimmedName);
+    if (clash.name === trimmedName) return clash.id;
+  }
 }
 
 export async function importSalesCommitments(file: File): Promise<ImportResult> {
@@ -202,7 +213,7 @@ export async function importPlanningCapacityMaster(file: File): Promise<ImportRe
     let outputRowsWritten = 0;
     let sheetsProcessed = 0;
 
-    for (const { grid } of sheets) {
+    for (const { sheetName, grid } of sheets) {
       const plantNameRaw = String(grid[1]?.[0] ?? "").trim();
       const typeHeaderRaw = String(grid[3]?.[0] ?? "").trim();
       if (!plantNameRaw || !typeHeaderRaw) continue;
@@ -239,7 +250,22 @@ export async function importPlanningCapacityMaster(file: File): Promise<ImportRe
         if (!byMonth.has(month)) byMonth.set(month, []);
         byMonth.get(month)!.push(dc);
       }
-      const dailyDateCols = [...byMonth.values()].find((cols) => cols.length > 1) ?? [];
+      // The real daily block is the month with more than one distinct day
+      // (single-day months are the per-month placeholder artifact). If two
+      // months both look like real daily data, the "pick the first" heuristic
+      // would silently drop a whole month — fail loud instead so the file can
+      // be split rather than half-imported without warning.
+      const multiDayMonths = [...byMonth.values()].filter((cols) => cols.length > 1);
+      if (multiDayMonths.length > 1) {
+        const months = multiDayMonths
+          .map((cols) => cols[0].dateStr.slice(0, 7))
+          .sort()
+          .join(", ");
+        throw new Error(
+          `Sheet "${sheetName}" has real daily data for more than one month (${months}); this importer only supports one reporting month per sheet. Split the file by month and re-import.`,
+        );
+      }
+      const dailyDateCols = multiDayMonths[0] ?? [];
 
       let planQtySum = 0;
       const dailyTotals = new Map<string, number>();
