@@ -46,32 +46,75 @@ export function parseNumber(value: unknown): string {
   return Number.isNaN(n) ? "0" : String(n);
 }
 
+// How to read *ambiguous* slash dates — ones where both the day and month
+// components are <= 12 (e.g. "05/08/2026"), so the order can't be inferred from
+// the values alone. "mdy" = month-first (US), "dmy" = day-first (most of the
+// world, incl. India). Unambiguous dates (a component > 12) are auto-detected
+// regardless of this setting. The Thermax exports tested so far are Excel's
+// US short-date format, so this defaults to "mdy"; set IMPORT_DATE_ORDER=dmy
+// if a day-first source ever appears.
+const SLASH_DATE_ORDER: "mdy" | "dmy" =
+  process.env.IMPORT_DATE_ORDER === "dmy" ? "dmy" : "mdy";
+
 export function toDateString(value: unknown): string {
   if (value instanceof Date) return value.toISOString().slice(0, 10);
   const s = String(value ?? "").trim();
   if (!s) return "";
 
-  // Already ISO-ish (yyyy-mm-dd...) — take it verbatim, no Date() round trip.
-  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
-
-  // m/d/yyyy, mm/dd/yyyy, or m/d/yy — the shapes spreadsheet exports use for
-  // date cells (Excel's default US short-date format is 2-digit-year).
-  // Parse the components directly: new Date(s) would interpret this as
-  // local midnight, and .toISOString() then shifts the date backward by a
-  // day on any machine ahead of UTC (e.g. IST).
-  const us = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
-  if (us) {
-    const [, m, d, yRaw] = us;
-    const y = yRaw.length === 2 ? `20${yRaw}` : yRaw;
-    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  // Year-first / ISO (yyyy-mm-dd or yyyy/mm/dd) — unambiguous, take verbatim.
+  const iso = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (iso) {
+    return `${iso[1]}-${iso[2].padStart(2, "0")}-${iso[3].padStart(2, "0")}`;
   }
 
-  const d = new Date(s);
-  if (!Number.isNaN(d.getTime())) {
-    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+  // Slash dates (d/m/y or m/d/y, 2- or 4-digit year) — the shapes spreadsheet
+  // exports use for date cells. Parse the components directly: new Date(s)
+  // would read this as local midnight, and reading it back in UTC then shifts
+  // the date backward a day on any machine ahead of UTC (e.g. IST).
+  const slash = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+  if (slash) {
+    const [, aRaw, bRaw, yRaw] = slash;
+    const a = Number(aRaw);
+    const b = Number(bRaw);
+    const year = yRaw.length === 2 ? `20${yRaw}` : yRaw;
+
+    let month: number;
+    let day: number;
+    if (a > 12 && b <= 12) {
+      // First value can't be a month → day-first (e.g. 30/08/2026).
+      day = a;
+      month = b;
+    } else if (b > 12 && a <= 12) {
+      // Second value can't be a month → month-first (e.g. 08/30/2026).
+      month = a;
+      day = b;
+    } else if (a <= 12 && b <= 12) {
+      // Genuinely ambiguous — use the configured order.
+      if (SLASH_DATE_ORDER === "dmy") {
+        day = a;
+        month = b;
+      } else {
+        month = a;
+        day = b;
+      }
+    } else {
+      throw new Error(
+        `Invalid date "${s}": both components exceed 12, so it is neither a valid day/month nor month/day.`,
+      );
+    }
+    if (month < 1 || month > 12 || day < 1 || day > 31) {
+      throw new Error(`Invalid date "${s}": day or month out of range.`);
+    }
+    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   }
-  return s;
+
+  // Anything else: fail loud rather than silently mis-parsing. Falling through
+  // to new Date(s) here would guess at the format and store a wrong (or
+  // timezone-shifted) date with no error — worse than rejecting the file. Add
+  // an explicit branch above for any new format a real export actually uses.
+  throw new Error(
+    `Unrecognized date format: "${s}". Expected ISO (yyyy-mm-dd) or slash (d/m/yyyy) dates.`,
+  );
 }
 
 export function toMonthDate(value: unknown): string {
