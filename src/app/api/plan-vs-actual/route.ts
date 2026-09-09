@@ -9,19 +9,22 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url);
   const plantCode = searchParams.get("plant");
-  const stream = (searchParams.get("stream") as Stream) ?? "cation";
+  const streamParam = searchParams.get("stream");
+  const stream = streamParam ? (streamParam as Stream) : undefined;
   const month = searchParams.get("month");
 
-  if (!plantCode || !month) {
-    return NextResponse.json({ error: "plant and month are required" }, { status: 400 });
+  if (!month) {
+    return NextResponse.json({ error: "month is required" }, { status: 400 });
   }
 
-  const plants = await listPlants();
-  const plant = plants.find((p) => p.code === plantCode);
-  if (!plant) {
-    return NextResponse.json({ rows: [] });
+  let plantId: string | undefined;
+  if (plantCode) {
+    const plants = await listPlants();
+    const plant = plants.find((p) => p.code === plantCode);
+    if (!plant) return NextResponse.json({ rows: [] });
+    plantId = plant.id;
   }
 
-  const rows = await getDailyPlanVsActual({ plantId: plant.id, stream, month });
+  const rows = await getDailyPlanVsActual({ plantId, stream, month });
   return NextResponse.json({ rows });
 }
