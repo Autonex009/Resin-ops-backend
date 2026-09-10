@@ -76,6 +76,8 @@ export async function POST(request: Request) {
     "",
     "Rules:",
     "- Always reply in English, regardless of the language the question is asked in.",
+    "- All output, plan, and capacity quantities are in cubic metres (m³). Always",
+    "  use the m³ unit; never report MT, tonnes, or any other unit.",
     "- Use ONLY the DATA below. Do not invent or estimate numbers.",
     "- If the data does not contain the answer, say so plainly and suggest which",
     "  import or page might have it.",
