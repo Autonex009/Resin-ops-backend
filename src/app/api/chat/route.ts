@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getDb } from "@/db";
 import { isAuthorized, unauthorized } from "@/lib/auth";
 import {
   getMonthlyOutputSummary,
@@ -10,6 +11,8 @@ import {
   getBatchesScheduleSummary,
   getCommitmentsAging,
 } from "@/lib/kpis";
+import { getCapacityByStream as getCapacityByPlantStream } from "@/lib/capacity";
+import { listPlants } from "@/lib/plants";
 
 // The chat endpoint gathers live dashboard data and asks DeepSeek to answer
 // over it. The DeepSeek key never leaves the backend — the frontend proxies
@@ -78,6 +81,9 @@ export async function POST(request: Request) {
     "- Always reply in English, regardless of the language the question is asked in.",
     "- All output, plan, and capacity quantities are in cubic metres (m³). Always",
     "  use the m³ unit; never report MT, tonnes, or any other unit.",
+    "- The DATA includes every batch and every sales commitment individually, plus",
+    "  per-plant and per-stream capacity and output. Break figures down by plant,",
+    "  stream, product, status or schedule whenever asked — the detail is there.",
     "- Use ONLY the DATA below. Do not invent or estimate numbers.",
     "- If the data does not contain the answer, say so plainly and suggest which",
     "  import or page might have it.",
@@ -132,9 +138,17 @@ export async function POST(request: Request) {
   }
 }
 
-// Compact snapshot of the same KPI aggregates the Overview uses, so the model
-// answers from the same numbers the user sees on screen.
+// Full dataset behind every dashboard tab: the KPI aggregates plus every
+// individual batch and sales commitment and the per-plant/stream capacity, so
+// the assistant can break figures down by plant, stream, product, status, etc.
 async function buildContext() {
+  const db = getDb();
+  const now = new Date();
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
+    .toISOString()
+    .slice(0, 10);
+  const today = now.toISOString().slice(0, 10);
+
   const [
     output,
     capacity,
@@ -144,6 +158,10 @@ async function buildContext() {
     outputByPlant,
     batchesSchedule,
     commitmentsAging,
+    plantList,
+    capacityByPlantStream,
+    batchRows,
+    commitmentRows,
   ] = await Promise.all([
     getMonthlyOutputSummary(),
     getCapacityUtilization(),
@@ -153,17 +171,60 @@ async function buildContext() {
     getOutputByPlant(),
     getBatchesScheduleSummary(),
     getCommitmentsAging(),
+    listPlants(),
+    getCapacityByPlantStream(monthStart),
+    db.query.batches.findMany({ with: { plant: true } }),
+    db.query.salesCommitments.findMany({ with: { plant: true } }),
   ]);
 
+  const isBehind = (b: (typeof batchRows)[number]) =>
+    b.actualCompletion ? b.actualCompletion > b.plannedCompletion : b.plannedCompletion < today;
+
+  const batches = batchRows.map((b) => ({
+    batch: b.batchNumber,
+    plant: b.plant?.code ?? null,
+    stream: b.stream,
+    plannedQty: Number(b.plannedQty),
+    actualQty: b.actualQty === null ? null : Number(b.actualQty),
+    plannedCompletion: b.plannedCompletion,
+    actualCompletion: b.actualCompletion,
+    status: b.status,
+    schedule: isBehind(b) ? "behind" : "on_track",
+  }));
+
+  const isShort = (c: (typeof commitmentRows)[number]) =>
+    c.requiredDate !== null && c.requiredDate < today && Number(c.balanceQty) > 0;
+
+  // Row-level commitments, but WITHOUT customer names or balance ₹value — those
+  // are PII / commercial data and this context is sent to an external API
+  // (DeepSeek). Operational fields only, which still answer plant/stream/
+  // product/status breakdowns.
+  const commitments = commitmentRows.map((c) => ({
+    order: c.salesOrderNumber,
+    orderDate: c.salesOrderDate,
+    requiredDate: c.requiredDate,
+    itemCode: c.itemCode,
+    item: c.itemDescription,
+    balanceQty: Number(c.balanceQty),
+    businessGroup: c.businessGroup,
+    plant: c.plant?.code ?? null,
+    status: isShort(c) ? "short" : "on_track",
+  }));
+
   return {
-    month: new Date().toISOString().slice(0, 7),
+    month: monthStart.slice(0, 7),
+    today,
     output,
     capacity,
     batchesBehind,
     commitmentsShort,
-    capacityByStream,
-    outputByPlant,
     batchesSchedule,
+    capacityByStream,
+    capacityByPlantStream,
+    outputByPlant,
     commitmentsAging,
+    plants: plantList.map((p) => ({ code: p.code, name: p.name })),
+    batches,
+    commitments,
   };
 }
