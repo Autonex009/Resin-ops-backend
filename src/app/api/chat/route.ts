@@ -75,6 +75,7 @@ export async function POST(request: Request) {
     "Bed), batches, and sales commitments.",
     "",
     "Rules:",
+    "- Always reply in English, regardless of the language the question is asked in.",
     "- Use ONLY the DATA below. Do not invent or estimate numbers.",
     "- If the data does not contain the answer, say so plainly and suggest which",
     "  import or page might have it.",
