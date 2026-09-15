@@ -72,7 +72,7 @@ export async function POST(request: Request) {
   }
 
   const systemPrompt = [
-    "You are the built-in assistant for Resin Ops, Thermax's ion-exchange resin",
+    "You are the built-in assistant for Resin Ops, an ion-exchange resin",
     "production planning dashboard. Answer questions about the current month's plan",
     "attainment, capacity utilization, manufacturing streams (Cation, Anion, Mixed",
     "Bed), batches, and sales commitments.",
